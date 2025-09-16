@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Cambiar Nombre – Web</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Cambiar Nombre – Web</h1>
+    <p class="note">Subcarpetas válidas: <b>Util</b> y <b>No_util</b> (sin tilde).</p>
+
+    <form id="form">
+      <label>Ruta base</label>
+      <div class="pick">
+        <input type="text" id="base" placeholder="Elige carpeta…" readonly />
+        <button id="btn-pick" type="button">Elegir carpeta…</button>
+        <button id="btn-open" type="button">Abrir carpeta</button>
+      </div>
+
+      <div class="row">
+        <label>Subcarpeta
+          <select id="subcarpeta"><option>Util</option><option>No_util</option></select>
+        </label>
+        <label>Clase
+          <select id="clase"><option>UTIL</option><option>NO_UTIL</option></select>
+        </label>
+      </div>
+
+      <div class="row">
+        <label>Fecha (YYYYMMDD)<input id="fecha" placeholder="20250818" /></label>
+        <label>Lote><input id="lote" placeholder="Lote01" /></label>
+        <label>Ángulo<input id="angulo" placeholder="Frontal / Sup / Ang45" /></label>
+      </div>
+
+      <div class="buttons">
+        <button id="btn-list">Listar & vista previa</button>
+        <button id="btn-rename" class="primary" disabled>Renombrar seleccionadas</button>
+      </div>
+    </form>
+
+    <section id="grid" class="grid"></section>
+    <div id="summary" class="summary"></div>
+    <div id="err" class="err"></div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
