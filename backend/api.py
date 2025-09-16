@@ -1,30 +1,26 @@
-# backend/api.py
 from pathlib import Path
-from datetime import timedelta
+from datetime import timedelta, datetime
+from io import BytesIO
+import zipfile
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
-# IMPORT RELATIVO (asegúrate de tener backend/__init__.py VACÍO)
+# Import relativo (backend/__init__.py debe existir y estar vacío)
 from .renamer_core import (
     RenameParams, build_plan, execute_plan,
     resolve_subfolder, list_images
 )
 
-# --------------------------------------------------------------------------------------
-# Paths (funciona igual en local y en Render)
-# --------------------------------------------------------------------------------------
+# -------------------- Paths --------------------
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent
-
-# Directorio de trabajo para archivos subidos (en Render es disco efímero)
 WORK_DIR = (PROJECT_ROOT / "uploads").resolve()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _safe_under_work_dir(p: Path) -> bool:
-    """Asegura que p esté dentro de WORK_DIR (evita path traversal)."""
     try:
         rp = p.resolve()
     except Exception:
@@ -33,10 +29,6 @@ def _safe_under_work_dir(p: Path) -> bool:
 
 
 def _ensure_rel_path(rel: str) -> Path:
-    """
-    Acepta rutas relativas tipo 'Util/imagen.jpg' o 'No_util/imagen.png'.
-    Rechaza absolutas y '../'.
-    """
     if not rel or rel.strip() == "":
         raise ValueError("ruta vacía")
     if ":" in rel or rel.startswith("/") or rel.startswith("\\"):
@@ -46,12 +38,8 @@ def _ensure_rel_path(rel: str) -> Path:
     return WORK_DIR.joinpath(*parts)
 
 
-# --------------------------------------------------------------------------------------
-# Flask app + CORS
-# --------------------------------------------------------------------------------------
+# -------------------- App & CORS --------------------
 app = Flask(__name__)
-
-# CORS explícito para frontends estáticos (GitHub Pages / Vercel / Netlify)
 CORS(
     app,
     resources={r"/*": {"origins": "*"}},
@@ -62,12 +50,9 @@ CORS(
 )
 
 
-# --------------------------------------------------------------------------------------
-# Endpoints
-# --------------------------------------------------------------------------------------
+# -------------------- Endpoints --------------------
 @app.get("/")
 def root():
-    """Home mínima para verificar despliegue."""
     return jsonify({
         "status": "ok",
         "message": "Cambiar Nombre API (Render)",
@@ -75,7 +60,9 @@ def root():
             "/api/upload",
             "/api/list",
             "/api/rename-selected",
-            "/api/image?path=<rel>"
+            "/api/image?path=<rel>",
+            "/api/download-selected",
+            "/api/download-all?subcarpeta=Util|No_util"
         ],
         "work_dir": str(WORK_DIR)
     })
@@ -86,16 +73,9 @@ def healthz():
     return jsonify({"status": "ok", "work_dir": str(WORK_DIR)})
 
 
-# ----------------------------- SUBIR ARCHIVOS -----------------------------------------
+# --------- Subir ----------
 @app.post("/api/upload")
 def upload_files():
-    """
-    Subida vía multipart/form-data:
-      - Campo 'files' (puede haber varios): files=@img1.jpg, files=@img2.png
-      - Campo 'subcarpeta' (opcional): 'Util' o 'No_util' (por defecto 'Util').
-
-    Guarda en WORK_DIR/<subcarpeta> y devuelve los nombres guardados.
-    """
     sub = request.form.get("subcarpeta", "Util")
     target_folder = resolve_subfolder(WORK_DIR, sub)
     target_folder.mkdir(parents=True, exist_ok=True)
@@ -111,7 +91,7 @@ def upload_files():
             continue
         dst = target_folder / filename
 
-        # Evitar colisiones: nombre (1), (2), ...
+        # Evitar colisiones
         stem, suf = dst.stem, dst.suffix
         k = 1
         while dst.exists():
@@ -119,28 +99,14 @@ def upload_files():
             k += 1
 
         f.save(dst)
-        saved.append({
-            "name": dst.name,
-            "rel_path": f"{target_folder.name}/{dst.name}"
-        })
+        saved.append({"name": dst.name, "rel_path": f"{target_folder.name}/{dst.name}"})
 
     return jsonify({"ok": True, "folder": str(target_folder), "saved": saved})
 
 
-# ----------------------------- LISTA / PREVIEW ----------------------------------------
+# --------- Listar / Preview ----------
 @app.post("/api/list")
 def api_list():
-    """
-    JSON esperado:
-      {
-        "subcarpeta": "Util" | "No_util",
-        "clase": "UTIL" | "NO_UTIL",
-        "fecha": "YYYYMMDD",
-        "lote": "Lote01",
-        "angulo": "Frontal"
-      }
-    Trabaja SIEMPRE sobre WORK_DIR (donde guardó /api/upload).
-    """
     data = request.get_json(force=True)
     sub = data.get("subcarpeta", "Util")
 
@@ -155,15 +121,14 @@ def api_list():
 
     folder = resolve_subfolder(WORK_DIR, sub)
     if not folder.exists():
-        # No hay nada subido todavía a esa subcarpeta
         return jsonify({"folder": str(folder), "count": 0, "items": []})
 
-    imgs = list_images(folder)  # archivos válidos .jpg/.png etc.
+    imgs = list_images(folder)
     plan = {item.src.name: item.dst.name for item in build_plan(params)}
 
     items = []
     for f in imgs:
-        rel = f"{folder.name}/{f.name}"  # relativo a WORK_DIR
+        rel = f"{folder.name}/{f.name}"
         items.append({
             "name": f.name,
             "proposed": plan.get(f.name, f.name),
@@ -173,13 +138,9 @@ def api_list():
     return jsonify({"folder": str(folder), "count": len(items), "items": items})
 
 
-# ----------------------------- ENTREGAR IMAGEN ----------------------------------------
+# --------- Servir imagen ----------
 @app.get("/api/image")
 def api_image():
-    """
-    Sirve una imagen por ruta relativa: ?path=Util/imagen.jpg
-    Seguridad: solo dentro de WORK_DIR; rechaza absolutas y '..'.
-    """
     rel = request.args.get("path", "")
     try:
         p = _ensure_rel_path(rel)
@@ -194,20 +155,9 @@ def api_image():
     return send_file(p)
 
 
-# ----------------------------- RENOMBRAR SELECCIONADAS --------------------------------
+# --------- Renombrar seleccionadas ----------
 @app.post("/api/rename-selected")
 def api_rename_selected():
-    """
-    JSON esperado:
-      {
-        "subcarpeta": "Util" | "No_util",
-        "clase": "UTIL",
-        "fecha": "20250818",
-        "lote": "Lote01",
-        "angulo": "Frontal",
-        "selected": ["img1.jpg", "img2.png"]  # nombres tal como aparecen en /api/list
-      }
-    """
     data = request.get_json(force=True)
     sub = data.get("subcarpeta", "Util")
     selected = set(data.get("selected") or [])
@@ -220,8 +170,62 @@ def api_rename_selected():
         lote=(data.get("lote") or "").strip(),
         angulo=(data.get("angulo") or "").replace(" ", "")
     )
-
     plan = build_plan(params)
     ok, err, skip = execute_plan(plan, only_names=selected)
-
     return jsonify({"renamed": ok, "errors": err, "skipped": skip})
+
+
+# --------- Descargas (ZIP) ----------
+def _zip_bytes(pairs):
+    """
+    pairs: lista de tuplas (Path absoluto, nombre dentro del zip)
+    """
+    bio = BytesIO()
+    with zipfile.ZipFile(bio, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for abs_path, arcname in pairs:
+            if abs_path.exists() and abs_path.is_file():
+                zf.write(abs_path, arcname)
+    bio.seek(0)
+    return bio
+
+
+@app.post("/api/download-selected")
+def download_selected():
+    data = request.get_json(force=True)
+    sub = data.get("subcarpeta", "Util")
+    selected = list(data.get("selected") or [])
+    folder = resolve_subfolder(WORK_DIR, sub)
+    if not folder.exists():
+        return ("Not Found", 404)
+
+    pairs = []
+    for name in selected:
+        p = folder / name
+        if _safe_under_work_dir(p) and p.exists():
+            pairs.append((p, name))
+
+    if not pairs:
+        return jsonify({"ok": False, "error": "No hay archivos válidos para descargar"}), 400
+
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    fname = f"{sub}_seleccionadas_{stamp}.zip"
+    bio = _zip_bytes(pairs)
+    return send_file(bio, download_name=fname, as_attachment=True, mimetype="application/zip")
+
+
+@app.get("/api/download-all")
+def download_all():
+    sub = request.args.get("subcarpeta", "Util")
+    folder = resolve_subfolder(WORK_DIR, sub)
+    if not folder.exists():
+        return ("Not Found", 404)
+
+    files = list_images(folder)
+    if not files:
+        return jsonify({"ok": False, "error": "No hay imágenes"}), 400
+
+    pairs = [(p, p.name) for p in files if _safe_under_work_dir(p)]
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    fname = f"{sub}_completo_{stamp}.zip"
+    bio = _zip_bytes(pairs)
+    return send_file(bio, download_name=fname, as_attachment=True, mimetype="application/zip")
