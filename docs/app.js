@@ -1,36 +1,29 @@
+// ====== CONFIGURA AQUÍ TU BACKEND ======
+const API_BASE = "https://cambiar-nombre.onrender.com"; // tu URL de Render
+// =======================================
+
 const $ = (id) => document.getElementById(id);
-const grid = $("grid"), summary = $("summary"), err = $("err");
+const err = $("err"), summary = $("summary"), msg = $("msg"), upMsg = $("upMsg"), grid = $("preview");
 
-function params() {
-  return {
-    base: $("base").value.trim(),
-    subcarpeta: $("subcarpeta").value,
-    clase: $("clase").value,
-    fecha: $("fecha").value.trim(),
-    lote: $("lote").value.trim(),
-    angulo: $("angulo").value.trim()
-  };
-}
-
-async function post(path, body) {
-  const res = await fetch(path, {
+async function postJSON(path, body) {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try { const j = await res.json(); if (j.error) msg += `: ${j.error}`; } catch {}
-    throw new Error(msg);
-  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
-
+async function postForm(path, formData) {
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body: formData });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
 function card(item) {
   return `
-    <article class="card">
-      <a href="${item.url}" target="_blank" rel="noopener">
-        <img src="${item.url}" alt="${item.name}" />
+    <article class="card img-card">
+      <a href="${API_BASE}${item.url}" target="_blank" rel="noopener">
+        <img loading="lazy" src="${API_BASE}${item.url}" alt="${item.name}" />
       </a>
       <div class="meta">
         <label class="chk">
@@ -43,54 +36,84 @@ function card(item) {
     </article>
   `;
 }
-
-function collectSelected() {
+function selectedNames() {
   return Array.from(document.querySelectorAll(".sel:checked")).map(x => x.dataset.name);
 }
 
-// Elegir carpeta
-$("btn-pick").addEventListener("click", async () => {
-  err.textContent = "";
+// 1) Subir
+$("btnUpload").addEventListener("click", async () => {
+  err.textContent = ""; upMsg.textContent = "Subiendo…";
   try {
-    const { ok, base, error } = await post("/api/pick-base", {});
-    if (ok && base) { $("base").value = base; }
-    else { alert(error || "No se pudo abrir el selector de carpetas."); }
-  } catch (e) { alert("No se pudo abrir el selector de carpetas. " + e.message); }
+    const files = $("files").files;
+    if (!files || files.length === 0) { upMsg.textContent = "Selecciona archivos"; return; }
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    fd.append("subcarpeta", $("subUp").value);
+
+    const res = await postForm("/api/upload", fd);
+    upMsg.textContent = `OK: ${res.saved.length} archivo(s) en ${res.folder}`;
+  } catch (e) {
+    upMsg.textContent = ""; err.textContent = "Error al subir: " + e.message;
+  }
 });
 
-// Abrir carpeta
-$("btn-open").addEventListener("click", async () => {
-  const folder = $("base").value.trim();
-  if (!folder) return;
-  try { await post("/api/open-folder", { folder }); } catch {}
-});
+// 2) Vista previa
+$("btnList").addEventListener("click", async () => {
+  err.textContent = ""; msg.textContent = ""; grid.innerHTML = "Cargando…";
+  $("btnRename").disabled = true;
 
-$("btn-list").addEventListener("click", async (e) => {
-  e.preventDefault(); err.textContent = ""; grid.innerHTML = "Cargando vista previa…";
-  $("btn-rename").disabled = true;
+  const payload = {
+    subcarpeta: $("sub").value,
+    clase: $("clase").value,
+    fecha: $("fecha").value.trim(),
+    lote: $("lote").value.trim(),
+    angulo: $("angulo").value.trim(),
+  };
+
   try {
-    const data = await post("/api/list", params());
-    if (data.count === 0) { grid.innerHTML = "<p>No hay imágenes.</p>"; summary.textContent = ""; return; }
+    const data = await postJSON("/api/list", payload);
+    if (data.count === 0) {
+      grid.innerHTML = "<p>No hay imágenes en esa subcarpeta. Sube primero 👆</p>";
+      summary.textContent = "";
+      return;
+    }
     grid.innerHTML = `
       <div class="toolbar">
-        <button id="sel-all" type="button">Seleccionar todo</button>
-        <button id="sel-none" type="button">Quitar selección</button>
+        <button id="selAll" type="button">Seleccionar todo</button>
+        <button id="selNone" type="button">Quitar selección</button>
       </div>
-      <div class="cards">${data.items.map(card).join("")}</div>`;
+      <div class="cards">${data.items.map(card).join("")}</div>
+    `;
     summary.textContent = `Carpeta: ${data.folder} | Imágenes: ${data.count}`;
-    $("btn-rename").disabled = false;
-    $("sel-all").onclick  = () => document.querySelectorAll(".sel").forEach(chk => chk.checked = true);
-    $("sel-none").onclick = () => document.querySelectorAll(".sel").forEach(chk => chk.checked = false);
-  } catch (e) { err.textContent = "Error: " + e.message; grid.innerHTML = ""; }
+    $("btnRename").disabled = false;
+
+    $("selAll").onclick  = () => document.querySelectorAll(".sel").forEach(chk => chk.checked = true);
+    $("selNone").onclick = () => document.querySelectorAll(".sel").forEach(chk => chk.checked = false);
+  } catch (e) {
+    grid.innerHTML = ""; err.textContent = "Error al listar: " + e.message;
+  }
 });
 
-$("btn-rename").addEventListener("click", async (e) => {
-  e.preventDefault(); err.textContent = "";
-  const selected = collectSelected();
-  if (selected.length === 0) { alert("Selecciona al menos una imagen."); return; }
+// 3) Renombrar
+$("btnRename").addEventListener("click", async () => {
+  err.textContent = ""; msg.textContent = "Renombrando…";
+  const selected = selectedNames();
+  if (selected.length === 0) { msg.textContent = ""; alert("Selecciona al menos una imagen."); return; }
+
+  const payload = {
+    subcarpeta: $("sub").value,
+    clase: $("clase").value,
+    fecha: $("fecha").value.trim(),
+    lote: $("lote").value.trim(),
+    angulo: $("angulo").value.trim(),
+    selected
+  };
+
   try {
-    const data = await post("/api/rename-selected", {...params(), selected});
-    alert(`Renombrados: ${data.renamed} | Omitidos: ${data.skipped} | Errores: ${data.errors}`);
-    $("btn-list").click();
-  } catch (e) { err.textContent = "Error: " + e.message; }
+    const res = await postJSON("/api/rename-selected", payload);
+    msg.textContent = `OK: ${res.renamed} | Omitidas: ${res.skipped} | Errores: ${res.errors}`;
+    $("btnList").click(); // refrescar preview
+  } catch (e) {
+    msg.textContent = ""; err.textContent = "Error al renombrar: " + e.message;
+  }
 });
